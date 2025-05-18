@@ -256,27 +256,74 @@ $37e9 \times 14.8e12 \times 6 = 3.285e24$ FLOPs (ignoring self-attention FLOPs).
 
 Question 8. Let's say each copy of the dense MLP block has $3\times I \times D$ parameters. We load $3ID$ bytes and do $6ID$ (INT8?) FLOPs per token, so we need on TPU v5e to have about 240 tokens per expert to be compute-bound. If $S$ is the total number of tokens, we expect each expert to get $S\times \dfrac{k}{E}$ tokens, so we want $S = 240E/k$. For Deepseek in particular, we need $240\times 256/8 = 7680$ tokens to become compute-bound.
 
-##### Chapter 1 Appendix
+##### Chapter 5. Parallelizing during Training
 
-Example: Consider the MoE block of a single decoder in Deepseek V3, treated as a single block. You could imagine a few different ways of computing the output of this MoE block for a 1000 token prompt:
-* One way would to proceed token by token. For each token, there are eight routed experts and one shared expert. We load the shared expert weights and keep them on device; then for each token, we load the eight routed experts, do computation, and store the output.
-	* Compute: $(8+1) \times 3 \times 7168 \times 2048 \times 1000 \times 2 = 7.927e11$ FLOPs.
-	* Communication: 
-		* $1000 \times 7168 \times 2 = 1.4336e7$ bytes to load the hidden states
-		* $(1 + 8 \times 1000) \times 3 \times 7168 \times 2048 = 3.524e11$ bytes to load the weights
-		* $1000 \times 7168 \times 2 = 1.4336e7$ bytes to store the new hidden states
-	* Arithmetic intensity: $7.927e11 / 3.524e11 \approx 2.25$ FLOPs per byte
-* The above approach has a quite low arithmetic intensity. One big reason is that we're loading the same expert many times, because we're not taking advantage of the fact that the same expert will likely be chosen by many tokens. Maybe you're not good at grouping them together, for... reasons. Then another way you could implement the MoE block would be to go expert-by-expert, compute the output for every token, and then mask & scale according to the gate output afterwards.
-	* Compute: $(256 + 1) \times 3 \times 7168 \times 2048 \times 1000 \times 2 = 2.264e13$ FLOPs.
-	* Communication:
-		* $1000 \times 7168 \times 2 = 1.4336e7$ bytes to load the hidden states
-		* $(1 + 256) \times 3 \times 7168 \times 2048 = 1.132e10$ bytes to load the weights
-		* $1000 \times 7168 \times 2 = 1.4336e7$ bytes to store the new hidden states
-	* Arithmetic intensity: $2.264e13 / 1.135e10 \approx 3085$ FLOPs per byte
-* This is obviously a much higher arithmetic intensity. What if you *can* only do the compute you have to, e.g. with an expert-parallel mapping where you send tokens to the right expert?
-	* Compute: $(8 + 1) \times 3 \times 7168 \times 2048 \times 1000 \times 2 = 7.927e11$ FLOPs.
-	* Communication:
-		* $1000 \times 7168 \times 2 = 1.4336e7$ bytes to load the hidden states
-		* $(1 + 256) \times 3 \times 7168 \times 2048 = 1.132e10$ bytes to load the weights
-		* $1000 \times 7168 \times 2 = 1.4336e7$ bytes to store the new hidden states
-	* Arithmetic intensity: $7.927e11 / 1.135e10 \approx 69.84$ FLOPs per byte.
+Four parallelism knobs discussed in this chapter:
+* Data-parallel: duplicate weights / grads / optimizer states on each model. Shard activations on batch dim. All-reduce gradients before updating
+	* Pros: 
+		* Simple and easy to scale with number of chips (as long as you have enough hardware and a large enough batch size)
+		* Little communication other than the all-reduce of gradients (which is non-blocking so can happen in the background of further backprop)
+	* Cons:
+		* Lots of memory pressure. Amount of memory used for the model scales with the number of replicas
+* FSDP: Shard activations on batch dim; shard weights / grads / optimizer states as well. In forward, do all-gathers so that compute is similar to DP; in backwards, we only need reduce-scatter gradients instead of all-reducing.
+	* Pros:
+		* Memory used no longer scales with the model
+		* Similar amount of compute as DP and similar amount of communication as well
+		* the communication during the forward pass becomes blocking
+	* Cons: 
+		* Scaling the batch size indefinitely can be undesirable sometimes for training stability or loss performance, and FSDP doesn't really let you scale without increasing batch size after a certain point. So you might need more dimensions for scaling.
+* Tensor parallelism AKA Megatron sharding: Shard 'every other' gemm. E.g. during the feedforward block, shard the intermediate dim $F$. 
+	* Naively requires an all-reduce in forward after the second gemm. But we can decouple this into all-gather and scatter-reduce, and do the all-gather before the first gemm and a scatter-reduce after the second gemm.
+	* In backward, this becomes a scatter-reduce after the first gemm's activation gradient, and an all-gather before the second gemm's activation gradient
+	* Pros:
+		* Communication involves the activations, not the weights, so if the activations are smaller than the weights it can be cheaper than FSDP.
+		* But it's compatible with FSDP, so you can and often should do both.
+		* Being able to separate the all-gather and reduce-scatter enables some nice flexibility
+	* Cons:
+		* The communication is always blocking
+		* Whether the workload is ICI-dependent doesn't depend on the batch size (since both compute and comms scale with $B$). Instead it basically only depends on how much compute is happening in between the two gemms. E.g. for FFN blocks it depends on $F$, the intermediate dim.
+* FSDP + TP:
+	* Actually one only needs to do both when the batch sizes aren't so large that you can get away with just FSDP
+	* The two interact pretty well together actually. 
+		* For FSDP we need to all-gather the weights only from a subset of the chips, since we only need a fraction of the weights.
+		* For FSDP we scatter-reduce the gradients, but again we only need to scatter-reduce a smaller amount that scales with the degree of TP parallelism.
+		* For TP we need to all-gather the activations, but only for the local batch size
+		* And for TP when we reduce-scatter, we again only need to handle the local activations.
+	* There are some very nifty derivations about optimal ratios for FSDP and TP. We get it basically by setting communication time equal to comms time and differentiating with respect to the FSDP parallelization degree. If that is $X$ and TP degree is $Y$, and $N$ is the total number of chips we have available, the optimal $X$ is $X_{opt} = \sqrt{\dfrac{B M_X N}{F M_Y}}$ where $M_X$ and $M_Y$ are the number of axes devoted to parallelizing along FSDP and TP respectively.
+* Pipeline parallel: Shard along the number of layers. Apparently TPUs don't do this much.
+	* Pros:
+		* Very small amount of communication needed between pipeline stages. 
+		* Also just another degree of parallelism
+	* Cons:
+		* Pipeline warmup and cooldown aka bubbling reduces efficiency significantly. 
+			* Deepseek described a TP strategy called DualPipe in the V3 paper to significantly mitigate this. The idea is basically to overlap the forward + activation gradient + weight gradient gemms.
+			* But it sounds like TPUs basically don't need to worry about things like this since ICI is good enough to make do with FSDP + TP
+
+Even TPUs face some issues scaling up eventually. In particular, DCN for connecting pods is not nearly as good as ICI within a pod. For parallelizing across pods, they typically use pure data parallelism (since each pod has plenty of memory I guess).
+
+Worked Problems
+Question 1. 
+* Embedding parameters: $32000 \times 5120 = 1.6384$e8  parameters
+* LM_head / D_Model: same as above, 1.6384e8 parameters
+* Decoder parameters: $40 \times 5120 \times (40\times 128 + 2\times 40 \times 128 + 40 \times 128 + 3 \times 5120 \times 2.7) = 1.269$e10 parameters.
+Add it all up to get pretty much 13 billion parameters on the dot.
+
+Question 2. 
+13e9 parameters: weights in BF16, gradients and other optimizer states in FP32 means we need to multiply this by $2 + 4 + 4 + 4 = 14 \implies 1.82$e11 bytes.
+The size per token for two of the activation checkpoints per layer is $5120 \times 2.7$, and the size of the third activation checkpoint per layer is $5120$. So the size of activations we need to checkpoint is $40 \times (5120 \times 2.7 \times 2 + 5120) \times 16e6 \times 2 = 4.194$e13 bytes.
+
+Question 3.
+Each v5p has 96GB of HBM, so the 16x16x16 slice will total 393.216TB. Each v5p has 4.59e14 BF16 FLOPs, so the slice totals 1.88e18 TFLOPs.
+
+The same calculation as above indicates that each copy of the model weights + gradients + optimizer states requires ~182GB, and the activation checkpoints will require 7.864TB.
+1. We definitely cannot do pure DP -- just the model parameters + optimizer states is too much.
+2. Since both activation and model / optimizer states will be sharded across chips, we should be fine based on memory. There's an apparently-implied question about whether we will be bound by interconnect traffic in this case. We can compute total training FLOPs in forward as: $13e9\times 3e6 \times 2 + 92 \times 40 \times 32768 \times 32768 \times 5120 \times 2 \times 2 = 1.59e17$ FLOPs. At 100% FLOPs util, this will take ~84ms. The total amount of communication traffic in the forward pass is from all-gathering the weights. The total number of bytes we need to all-gather is $V=26e9$, and the formula for the latency of a 3D all-gather on TPU with wraparound links was $\dfrac{2V}{3\times W_{ICI}}$ which is $\dfrac{2\times 26e9}{3\times 1.8e11} =$ 96ms. So the forward pass will be slightly communication-bound, but it honestly doesn't seem like that big a deal to me personally assuming one can constantly be running communication traffic in the background?
+   
+   Alternatively, the derivations in the text say FSDP becomes comms-bound when batch size per shard < $C/W$. In this case, batch size per shard is $3e6/4096 = 732$, and $C/W$ is $4.59e14/(3\times W_ICI) = 4.59e14/(3\times 1.8e11) = 850$. Similar ratio!
+3. We can compute $X_{opt} = \sqrt{\dfrac{B M_X N}{F M_Y}}$ as $\sqrt{\dfrac{3e6\times 2\times 4096}{13824\times 1}}\approx 1333$, which roughly implies $Y=3$, kinda weird. Instead maybe we'll devote two axes to $X$ / FSDP and one axis to $Y$. Then the total compute in forward remains $1.59e17$ FLOPs, so compute remains at 84ms assuming 100% flops util. The total communication from all-gathering the weights becomes $\dfrac{2V}{2\times W_{ICI} \times Y} = 9ms$, and the total all-reduce traffic is $\dfrac{4\times 40 \times 3e6\times 5120\times 2}{W_{ICI}\times X} = 11ms$. That sums to 20ms, so we avoid being ICI bound now. Not sure why this diverges so much from the book answer...
+
+Question 4. The answer to the first part doesn't depend on the batch size. 
+
+For the second part, reducing the batch size makes us more communications bound, but at a larger batch size we would no longer be communications-bound.
+
+For the last question, by my math we're probably fine even at $B=1e6$, but I probably need to understand what I'm doing differently compared to the book's derivations.
