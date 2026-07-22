@@ -168,12 +168,61 @@ A(10,4,5) = 36$, the Witt-residual optimum):
   slope $\sim -21$ vs $-4$ per block.
 
 So within this cell the "thin enough to dip" ($Z \ge 23$) and "liftable with
-a rise" ($Z \le 2$) regimes are separated by a factor of ten. Not yet a
-theorem — the samples should become an exhaustive sweep over stable-set
-isomorphism classes of $J(10,5)$ (a 252-vertex graph; standard clique/orbit
-tooling), and the paving-with-larger-blocks and non-paving truncation cells
-remain open. Those two cells are the actual frontier of an exhaustive
-$n = 10$ verdict.
+a rise" ($Z \le 2$) regimes are separated by a factor of ten.
+
+## The paving cells are now closed by theorem
+
+Rather than sweeping stable-set isomorphism classes (millions of cases),
+`theorem_cells12.md` proves outright:
+
+> **Theorem.** No rank-5 paving matroid on 10 elements with $W_4 < 120$
+> admits an erection to rank 6. Hence a 10-element counterexample to Rota's
+> conjecture, if one exists, has a **non-paving** truncation.
+
+Proof shape: erection hyperplanes ("classes") are closed under block
+absorption; exhaustive counting over block packings shows closed classes of
+size 8 or 9 would force savings $< 91$ (not thin), so classes have $\le 7$
+points; that kills blocks of size $\ge 7$ outright, forces 6-blocks to
+pairwise meet in exactly 2 (hence $\le 2$ of them) and to meet 5-blocks in
+$\le 2$; case analysis on the number of 6-blocks then caps the 5-block
+count far below thinness — the pure sparse-paving case dying by a
+triple-count: $Z \ge 23$ circuit-hyperplanes force $\ge 10Z - 120 \ge 110$
+pairs sharing a triple, while the class-size lemma allows at most
+$2Z \le 72$. Every counting ingredient (packing numbers $A(7,4,5) = 3$,
+$A(8,4,5) = 8$, $A(8,4,4) = 14$, triple-packing maxima, all sub-case
+savings maxima) is machine-verified by exhaustive branch-and-bound in
+`verify_cells12.py`, and the theorem is cross-validated against the cascade
+code on hundreds of randomized paving families (savings $\ge 91$ ⟹
+non-erectable, no exceptions).
+
+## Cell 3: non-paving truncations (`cell3_sweep.py`)
+
+Structural prunes: a rank-4 flat of a rank-6 matroid on 10 points has
+$\le 8$ points, so any $T$ with a 9-point rank-4 flat is non-erectable
+(verified: $U_{4,9} \oplus$ coloop, thin at $W_4 = 85$, does not erect);
+and in a counterexample every point-contraction's flat-count vector must be
+unimodal (the $n \le 9$ catalogue), giving a per-point prune.
+
+Sweep results (~8,000 non-paving thin truncations):
+
+| family | non-paving rank-5 | thin | erectable & thin | best $H$ vs $W_4$ |
+|---|---|---|---|---|
+| random GF(2), 10 pts | 3,995 | 3,995 (all!) | **0** | — |
+| random GF(3)/GF(5) | 1,000 | 1,000 | **0** | — |
+| truncations of rank-6 GF(2) | 2,935 | 1,674 | 1,674 (by construction) | $H \approx W_4/3$, never close |
+| structured (two solids, cones) | 80 | 80 | 0 | — |
+
+The dichotomy is stark: representable rank-5 geometries on 10 points are
+automatically thin ($W_4$ is capped by the ambient hyperplane count) but
+never erectable; truncations of rank-6 matroids erect by construction but
+their free erections rise to only a third of the needed height. What
+remains genuinely open for a complete $n = 10$ verdict is the sliver:
+non-paving, non-representable, thin, erectable, $H > W_4$ — no member of
+which any sweep has come within a factor of 3 of producing. Closing it
+rigorously needs either an extension of the class-size counting to
+non-paving hyperplane structures (the machinery no longer d-partitions,
+but Fact-1-style seeded classes still exist), or isomorph-free generation
+of thin non-paving rank-5 matroids — both well-posed next milestones.
 
 ## Where to push next
 
