@@ -128,6 +128,53 @@ provably preserves matroidness) did not open enough slack even at 50%
 density. This tension — *thin enough to dip, loose enough to lift* — is, in
 compressed empirical form, why the conjecture is hard.
 
+## Feasibility of an exhaustive n = 10, rank-6 sweep (`exp_rank6_n10.py`)
+
+Estimates in the billions for 10-element matroid counts are consistent with
+the Bansal–Pendavingh–van der Pol asymptotics ($\log_2\log_2 m_n \le n -
+\tfrac32\log_2 n + O(\log\log n)$ gives $\sim 2^{32} \approx 4\times10^9$ at
+$n=10$), but no enumeration exists — the frontier is $n = 9$ (Mayhew–Royle,
+~383M matroids). The census would have to be *generated*, and that, not the
+unimodality check, is the entire cost:
+
+- **Checking is trivial.** A matroid on 10 elements is a 1024-entry rank
+  table; counting flats by rank is $\sim n \cdot 2^n$ table lookups.
+  Measured: 7 ms/matroid (flats engine), 0.7 ms (table walk, pure Python),
+  ~2–5 µs compiled — i.e. **~4 core-hours for 4.9B matroids** in C.
+- **Generation is not.** Isomorph-free exhaustive generation (canonical
+  augmentation from the 9-element catalogue) costs orders of magnitude more
+  per matroid and all of the engineering.
+
+**The prune that removes rank-6 generation entirely.** Any 10-element
+counterexample is simple (its simplification lives on $\le 9$ elements, all
+verified) and rank 6 with its dip at $k=4$. Its rank-5 truncation $T(M)$
+shares $W_0..W_4$, and $M$ is an erection of $T(M)$, so $W_5(M) \le
+H_{\mathrm{free}}(T(M))$. Hence a rank-6 counterexample on 10 elements
+exists **iff** some simple rank-5 matroid on 10 elements has $W_4 < W_3$
+and a free erection with $H_{\mathrm{free}} > W_4$. One free-erection
+computation settles *all* rank-6 matroids sharing that truncation, and the
+thinness filter $W_4 < W_3 \le 120$ applies before erecting.
+
+Measured on the sparse-paving cell of that truncation space (rank-5 sparse
+paving needs $Z \ge 23$ circuit-hyperplanes for thinness; $Z \le
+A(10,4,5) = 36$, the Witt-residual optimum):
+
+- 386 sampled families with $Z \in [23, 36]$ (Witt-code subfamilies and
+  independent local-search packings): **all non-erectable** — 35 ms each.
+- Sweeping $Z = 0..22$: erectability itself dies by $Z \approx 8$, and
+  $H_{\mathrm{free}}$ exceeds $W_4$ only for $Z \le 2$. Each added
+  circuit-hyperplane costs the free erection ~20 hyperplanes while the
+  dip threshold falls by only 4 — the two requirements diverge with
+  slope $\sim -21$ vs $-4$ per block.
+
+So within this cell the "thin enough to dip" ($Z \ge 23$) and "liftable with
+a rise" ($Z \le 2$) regimes are separated by a factor of ten. Not yet a
+theorem — the samples should become an exhaustive sweep over stable-set
+isomorphism classes of $J(10,5)$ (a 252-vertex graph; standard clique/orbit
+tooling), and the paving-with-larger-blocks and non-paving truncation cells
+remain open. Those two cells are the actual frontier of an exhaustive
+$n = 10$ verdict.
+
 ## Where to push next
 
 1. **Skip erections; encode the target directly.** A rank-6 counterexample is
