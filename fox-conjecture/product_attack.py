@@ -35,16 +35,19 @@ def convolve(a, b):
 def load_unique(paths, max_deg=None):
     seen = {}
     for path in paths:
-        with gzip.open(path, "rt") as f:
-            for line in f:
-                rec = json.loads(line)
-                b = tuple(abs(c) for c in rec["coeffs"])
-                if len(b) < 2:
-                    continue
-                if max_deg and len(b) > max_deg + 1:
-                    continue
-                if b not in seen:
-                    seen[b] = rec
+        try:
+            with gzip.open(path, "rt") as f:
+                for line in f:
+                    rec = json.loads(line)
+                    b = tuple(abs(c) for c in rec["coeffs"])
+                    if len(b) < 2:
+                        continue
+                    if max_deg and len(b) > max_deg + 1:
+                        continue
+                    if b not in seen:
+                        seen[b] = rec
+        except (EOFError, OSError, ValueError):
+            continue  # tolerate a truncated final gzip member
     return seen
 
 
