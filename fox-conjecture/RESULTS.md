@@ -8,7 +8,7 @@ Session date: 2026-07-24. Hardware: 4 cores, ~2.5 hours of compute.
 |---|---|---|
 | Random prime alternating knots (3 samplers: broad, large-only, twist-structured) | 352,439 knots, diagrams up to 96 crossings, Alexander degree up to 68 (genus 34), determinants up to 3.3·10²⁰ | 0 |
 | Directed evolutionary climb over embedded Tait graphs (twist surgery, det-capped, margin + LC-surplus objective) | 2,032,984 evaluations across 3 runs | 0 |
-| Connected-sum product attack (pairwise + triple convolutions of sampled polynomials) | see `product_attack.py` log | 0 |
+| Connected-sum product attack (convolutions of sampled polynomials) | 8,002,000 pairwise + 36,000 triple products over 315,919 unique sequences | 0 |
 
 Every knot was checked for: unimodality of |coefficients| (weak Fox),
 strict trapezoidal shape (Fox as stated), and log-concavity (Stoimenow's
