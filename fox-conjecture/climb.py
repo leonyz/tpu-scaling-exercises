@@ -41,6 +41,24 @@ def off_plateau_lc(b):
     return best
 
 
+def lc_surplus(b):
+    """max integer b[k-1]b[k+1] - b[k]^2 over off-plateau triples.
+
+    Log-concavity fails iff this is > 0.  Arithmetic-progression ascents
+    sit at exactly -1, the sharpest LC-consistent value, so this is the
+    right pressure gauge for the climb (the ratio saturates at 1 on its
+    own as coefficients grow)."""
+    peak = max(b)
+    best = None
+    for k in range(1, len(b) - 1):
+        if b[k - 1] == b[k] == b[k + 1] == peak:
+            continue
+        s = b[k - 1] * b[k + 1] - b[k] * b[k]
+        if best is None or s > best:
+            best = s
+    return best if best is not None else -(10 ** 9)
+
+
 def evaluate(G):
     """Build the diagram, compute Delta, return (score, record) or None."""
     L = G.link()
@@ -56,8 +74,9 @@ def evaluate(G):
     if m is None:
         return None
     lc = off_plateau_lc(b)
-    # lexicographic score, smaller is better
-    score = (m, -lc, Fraction(info["det"], info["degree"] + 1), -info["degree"])
+    # lexicographic score, smaller is better: margin, then LC surplus
+    score = (m, -lc_surplus(b), Fraction(info["det"], info["degree"] + 1),
+             -info["degree"])
     rec = {"n": len(L.crossings), "coeffs": coeffs, "det": info["det"],
            "degree": info["degree"], "margin": m, "lc": float(lc),
            "unimodal": info["unimodal"], "trapezoidal": info["trapezoidal"],
@@ -165,7 +184,7 @@ def main():
         if time.time() - last_report > 120:
             last_report = time.time()
             print(f"[{time.time()-t0:6.0f}s] {evals} evals, frontier margin="
-                  f"{pop[0][0][0]} lc={float(-pop[0][0][1]):.4f}", flush=True)
+                  f"{pop[0][0][0]} surplus={-pop[0][0][1]}", flush=True)
 
     with open(f"{args.out}/final_pop.jsonl", "w") as f:
         for score, G in pop[:10]:
